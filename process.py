@@ -114,7 +114,7 @@ def convert_to_16k_mono(input_path, output_path):
         "-acodec", "pcm_s16le",
         str(output_path),
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(cmd, capture_output=True)
     return result.returncode == 0
 
 
@@ -357,7 +357,7 @@ def split_audio_clips(source_audio, segments, clips_dir):
             "-ar", "16000", "-ac", "1",
             str(output_path),
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True)
         if result.returncode == 0:
             count += 1
             seg["file"] = filename
@@ -389,6 +389,9 @@ def extract_embedding(model, wav_path):
     """对单个 WAV 文件提取 embedding 向量"""
     res = model.generate(input=str(wav_path))
     embedding = res[0]["spk_embedding"]
+    # 处理 torch tensor（可能在 GPU 上）
+    if hasattr(embedding, "cpu"):
+        embedding = embedding.cpu().numpy()
     if isinstance(embedding, np.ndarray):
         vec = embedding.flatten()
     else:

@@ -50,6 +50,9 @@ def extract_embedding(model, wav_path):
     """对单个 WAV 文件提取 embedding 向量"""
     res = model.generate(input=str(wav_path))
     embedding = res[0]["spk_embedding"]
+    # 处理 torch tensor（可能在 GPU 上）
+    if hasattr(embedding, "cpu"):
+        embedding = embedding.cpu().numpy()
     if isinstance(embedding, np.ndarray):
         vec = embedding.flatten()
     else:
