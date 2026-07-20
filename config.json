@@ -1,0 +1,25 @@
+{
+  "export_path": "export",
+  "namespaces": {
+    "魔幻手机": {
+      "hotwords": "傻妞 陆小千 小千哥哥 黄眉大王 游所为 化梅 猪八戒 孙悟空 楚楚",
+      "corrections": {
+        "闪妞": "傻妞",
+        "山妞": "傻妞",
+        "小剑哥哥": "小千哥哥",
+        "小剑": "小千",
+        "画面条": "化梅那条",
+        "画眉": "化梅",
+        "华梅": "化梅"
+      }
+    }
+  },
+  "clustering": {
+    "distance_threshold": 0.30,
+    "min_duration": 1.0
+  },
+  "identification": {
+    "similarity_threshold": 0.70,
+    "margin_threshold": 0.10
+  }
+}
