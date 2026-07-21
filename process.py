@@ -1,12 +1,16 @@
 """
 Cheung-Data v2 - 素材处理管线
 
-主流程：ASR 识别 + 音频切分 + 匿名聚类 + 角色标注
+主流程：
+  --gen-edit   : ASR 识别 → 生成 edit.txt + reference.wav → 打开编辑器
+  --apply-edit : 按 edit.txt 切分 → 聚类 → 标注
+  --label      : 仅重新标注（声纹库更新后使用）
 
 用法：
-  python process.py --namespace 魔幻手机                # 完整流程（有 .npy 时自动标注）
-  python process.py --namespace 魔幻手机 --no-label     # 不标注，只切分+聚类
-  python process.py --label 魔幻手机/EP01               # 仅重新标注（声纹库更新后使用）
+  python process.py --namespace 魔幻手机 --gen-edit EP01.wav
+  python process.py --namespace 魔幻手机 --apply-edit EP01
+  python process.py --namespace 魔幻手机 --apply-edit EP01 --no-label
+  python process.py --label 魔幻手机/EP01
 
 依赖：funasr, numpy, soundfile, scikit-learn, FFmpeg
 """
@@ -17,9 +21,11 @@ import json
 import subprocess
 import argparse
 import shutil
+import re
 from pathlib import Path
 
 import numpy as np
+import soundfile as sf
 
 
 # ============================================================
@@ -93,10 +99,18 @@ def check_ffmpeg():
 
 
 def format_time(seconds):
-    """将秒数格式化为 XXmXXs"""
+    """将秒数格式化为 XXmXX.XXs（精确到 0.01 秒）"""
     m = int(seconds // 60)
-    s = int(seconds % 60)
-    return f"{m:02d}m{s:02d}s"
+    s = seconds % 60
+    return f"{m:02d}m{s:05.2f}s"
+
+
+def parse_time(time_str):
+    """将 XXmXX.Xs 格式解析为秒数（兼容整数格式）"""
+    match = re.match(r"(\d+)m(\d+(?:\.\d+)?)s", time_str)
+    if not match:
+        raise ValueError(f"无法解析时间格式: {time_str}")
+    return int(match.group(1)) * 60 + float(match.group(2))
 
 
 def post_correct(text, corrections):
@@ -128,17 +142,22 @@ def convert_to_16k_mono(input_path, output_path):
     return result.returncode == 0
 
 
-def split_by_silence(text, timestamps):
+def split_to_phrases(text, timestamps):
     """
-    按句末标点切分文本为句子。
+    按逗号级粒度切分文本为短句。
+
+    所有停顿标点（逗号、句号、问号等）都作为切分点，
+    产出最细粒度的短句列表，供 edit.txt 使用。
 
     text: 完整识别文本（含标点）
     timestamps: 字级时间戳 [[start_ms, end_ms], ...]
 
     返回: [{start, end, text}, ...]
     """
+    # 标点符号集合（不占 timestamp 位置）
     punctuation = set("。？！；…，,、：:""''「」（）()《》")
-    sentence_ends = set("。？！；…")
+    # 切分标点：遇到这些就切
+    split_puncts = set("。？！；…，,")
 
     # 建立字符到 timestamp 的映射
     char_info = []
@@ -153,7 +172,7 @@ def split_by_silence(text, timestamps):
             else:
                 char_info.append((char, None))
 
-    # 按句末标点切分
+    # 按切分标点切分
     segments = []
     current_chars = []
     current_start = None
@@ -166,7 +185,7 @@ def split_by_silence(text, timestamps):
                 current_start = timestamps[ts_i][0]
             current_end = timestamps[ts_i][1]
 
-        if char in sentence_ends and current_start is not None:
+        if char in split_puncts and current_start is not None:
             segment_text = "".join(current_chars).strip()
             if segment_text:
                 segments.append({
@@ -187,107 +206,15 @@ def split_by_silence(text, timestamps):
             "text": segment_text,
         })
 
-    # 超长片段按逗号二次切分
-    final_segments = []
-    for seg in segments:
-        duration = seg["end"] - seg["start"]
-        if duration <= 15.0:
-            final_segments.append(seg)
-        else:
-            final_segments.extend(split_long_by_comma(seg))
-
-    return final_segments
+    return segments
 
 
-def split_long_by_comma(seg):
-    """对超长片段按逗号二次切分，时间按字数比例分配"""
-    text = seg["text"]
-    parts = []
-    current = ""
-    for char in text:
-        current += char
-        if char in "，," and len(current) >= 6:
-            parts.append(current)
-            current = ""
-    if current:
-        if parts:
-            parts.append(current)
-        else:
-            return [seg]
+def transcribe_to_phrases(audio_path, model, hotwords=""):
+    """
+    使用 FunASR 识别音频，返回逗号级短句列表。
 
-    if len(parts) <= 1:
-        return [seg]
-
-    total_duration = seg["end"] - seg["start"]
-    total_chars = sum(len(p) for p in parts)
-
-    results = []
-    time_cursor = seg["start"]
-    for part in parts:
-        part_duration = total_duration * (len(part) / total_chars)
-        part_end = time_cursor + part_duration
-        part_text = part.strip()
-        if part_text:
-            results.append({
-                "start": round(time_cursor, 3),
-                "end": round(part_end, 3),
-                "text": part_text,
-            })
-        time_cursor = part_end
-
-    return results
-
-
-def merge_vad_fragments(segments, max_gap=1.0):
-    """合并被 VAD 错误切断的片段"""
-    sentence_ends = set("。？！；…")
-
-    if not segments:
-        return segments
-
-    merged = [segments[0]]
-    for seg in segments[1:]:
-        prev = merged[-1]
-        gap = seg["start"] - prev["end"]
-        combined_duration = seg["end"] - prev["start"]
-
-        prev_last_char = prev["text"].rstrip()[-1] if prev["text"].rstrip() else ""
-
-        if prev_last_char not in sentence_ends and gap < max_gap and combined_duration <= 30.0:
-            merged[-1] = {
-                "start": prev["start"],
-                "end": seg["end"],
-                "text": prev["text"] + seg["text"],
-            }
-        else:
-            merged.append(seg)
-
-    return merged
-
-
-def merge_short_segments(segments, max_gap=0.3, min_chars=4):
-    """合并过短的相邻片段"""
-    if not segments:
-        return segments
-
-    merged = [segments[0]]
-    for seg in segments[1:]:
-        prev = merged[-1]
-        gap = seg["start"] - prev["end"]
-        combined_duration = seg["end"] - prev["start"]
-        if gap < max_gap and len(prev["text"]) < min_chars and combined_duration <= 15.0:
-            merged[-1] = {
-                "start": prev["start"],
-                "end": seg["end"],
-                "text": prev["text"] + seg["text"],
-            }
-        else:
-            merged.append(seg)
-    return merged
-
-
-def transcribe_audio(audio_path, model, hotwords=""):
-    """使用 FunASR 识别音频，返回 segments 列表"""
+    返回: [{start, end, text}, ...]
+    """
     print(f"  [ASR] 语音识别中...")
 
     kwargs = {
@@ -303,6 +230,7 @@ def transcribe_audio(audio_path, model, hotwords=""):
     segment_list = []
     for item in res:
         if "sentence_info" in item:
+            # sentence_info 粒度通常是句子级，直接用
             for sent in item["sentence_info"]:
                 text = sent["text"].strip()
                 if text:
@@ -312,45 +240,359 @@ def transcribe_audio(audio_path, model, hotwords=""):
                         "text": text,
                     })
         elif "text" in item and "timestamp" in item and item["timestamp"]:
-            sentences = split_by_silence(item["text"], item["timestamp"])
-            segment_list.extend(sentences)
+            # 字级 timestamp → 按逗号级切分
+            phrases = split_to_phrases(item["text"], item["timestamp"])
+            segment_list.extend(phrases)
         elif "text" in item:
             text = item["text"].strip()
             if text:
                 segment_list.append({"start": 0.0, "end": 0.0, "text": text})
 
-    # 合并 VAD 碎片
-    segment_list = merge_vad_fragments(segment_list)
-
     return segment_list
 
 
-def postprocess_segments(segments, corrections, min_duration=1.0):
-    """后处理：纠错 + 过滤极短 + 合并短句"""
-    # 纠错
-    for seg in segments:
-        seg["text"] = post_correct(seg["text"], corrections)
+# ============================================================
+# --gen-edit：生成 edit.txt + reference.wav
+# ============================================================
 
-    # 过滤极短片段
-    segments = [seg for seg in segments if (seg["end"] - seg["start"]) >= min_duration]
+def is_sentence_end(text):
+    """判断文本是否以句末标点结尾"""
+    sentence_ends = set("。？！；…")
+    stripped = text.rstrip()
+    return stripped and stripped[-1] in sentence_ends
 
-    # 合并短句
-    segments = merge_short_segments(segments)
+
+def gen_edit(namespace, wav_filename, config):
+    """生成 edit.txt 和 reference.wav"""
+    wavs_dir = Path("wavs") / namespace
+    wav_path = wavs_dir / wav_filename
+
+    if not wav_path.exists():
+        print(f"❌ WAV 文件不存在: {wav_path}")
+        sys.exit(1)
+
+    wav_stem = wav_path.stem
+    episode_dir = Path("output") / namespace / wav_stem
+
+    # 检查 edit.txt 是否已存在
+    edit_path = episode_dir / "edit.txt"
+    if edit_path.exists():
+        print(f"❌ edit.txt 已存在: {edit_path}")
+        print(f"   请删除后重新执行: del \"{edit_path}\"")
+        sys.exit(1)
+
+    print(f"\n{'='*60}")
+    print(f"生成编辑文件: {namespace}/{wav_filename}")
+    print(f"{'='*60}")
+
+    # 创建输出目录
+    episode_dir.mkdir(parents=True, exist_ok=True)
+
+    # 步骤 1：音频转换
+    temp_16k = episode_dir / "_temp_16k.wav"
+    print(f"  [转换] 转为 16kHz mono...")
+    if not convert_to_16k_mono(wav_path, temp_16k):
+        print(f"  ❌ 音频转换失败")
+        sys.exit(1)
+
+    try:
+        # 步骤 2：ASR 识别（逗号级粒度）
+        print(f"  加载 ASR 模型...")
+        from funasr import AutoModel
+
+        asr_model = AutoModel(
+            model="iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
+            model_revision="v2.0.4",
+            vad_model="fsmn-vad",
+            vad_kwargs={"max_single_segment_time": 60000},
+            punc_model="ct-punc",
+            device="cuda:0",
+        )
+        print("  ✓ ASR 模型加载完成")
+
+        ns_config = get_namespace_config(config, namespace)
+        hotwords = ns_config.get("hotwords", "")
+        corrections = ns_config.get("corrections", {})
+
+        phrases = transcribe_to_phrases(temp_16k, asr_model, hotwords)
+
+        if not phrases:
+            print("  ⚠ 未识别到任何对话")
+            sys.exit(1)
+
+        # 后处理纠错
+        for phrase in phrases:
+            phrase["text"] = post_correct(phrase["text"], corrections)
+
+        # 过滤极短片段（< 0.3秒，纯噪声）
+        phrases = [p for p in phrases if (p["end"] - p["start"]) >= 0.3]
+
+        print(f"  ✓ 识别完成: {len(phrases)} 个短句")
+
+        # 步骤 3：生成 edit.txt（按句末标点插空行）
+        print(f"  [生成] 写入 edit.txt...")
+        with open(edit_path, "w", encoding="utf-8") as f:
+            for i, phrase in enumerate(phrases):
+                start_str = format_time(phrase["start"])
+                end_str = format_time(phrase["end"])
+                f.write(f"[{start_str}-{end_str}] {phrase['text']}\n")
+
+                # 如果以句末标点结尾，插入空行（预切分）
+                if is_sentence_end(phrase["text"]):
+                    f.write("\n")
+
+        print(f"  ✓ edit.txt 已生成 ({len(phrases)} 行)")
+
+        # 步骤 4：生成 reference.wav
+        print(f"  [生成] 拼接 reference.wav...")
+        reference_path = episode_dir / "reference.wav"
+        generate_reference_wav(temp_16k, phrases, reference_path)
+        print(f"  ✓ reference.wav 已生成")
+
+        # 步骤 5：自动打开
+        open_editor(edit_path)
+        open_player(reference_path)
+
+        print(f"\n{'='*60}")
+        print(f"完成！请编辑后运行:")
+        print(f"  python process.py --namespace {namespace} --apply-edit {wav_stem}")
+        print(f"{'='*60}")
+
+    finally:
+        if temp_16k.exists():
+            temp_16k.unlink()
+
+
+def generate_reference_wav(source_wav, phrases, output_path, silence_duration=2.0):
+    """
+    将 ASR 短句音频按顺序拼接，片段间插入静音，生成 reference.wav。
+
+    每个片段与 edit.txt 每行一一对应。
+    """
+    # 读取源音频
+    data, sr = sf.read(str(source_wav))
+
+    # 静音片段
+    silence = np.zeros(int(silence_duration * sr))
+
+    # 拼接
+    pieces = []
+    for i, phrase in enumerate(phrases):
+        start_sample = int(phrase["start"] * sr)
+        end_sample = int(phrase["end"] * sr)
+
+        # 边界保护
+        start_sample = max(0, start_sample)
+        end_sample = min(len(data), end_sample)
+
+        if start_sample < end_sample:
+            pieces.append(data[start_sample:end_sample])
+
+        # 片段间插入静音（最后一个片段后不加）
+        if i < len(phrases) - 1:
+            pieces.append(silence)
+
+    if pieces:
+        combined = np.concatenate(pieces)
+        sf.write(str(output_path), combined, sr)
+
+
+def open_editor(file_path):
+    """用 Notepad++ 打开文件，fallback 到系统默认"""
+    notepad_pp = Path(r"C:\Program Files (x86)\Notepad++\notepad++.exe")
+    try:
+        if notepad_pp.exists():
+            subprocess.Popen([str(notepad_pp), str(file_path)])
+            print(f"  ✓ 已用 Notepad++ 打开 edit.txt")
+        else:
+            os.startfile(str(file_path))
+            print(f"  ✓ 已用默认编辑器打开 edit.txt")
+    except Exception as e:
+        print(f"  ⚠ 无法自动打开编辑器: {e}")
+
+
+def open_player(file_path):
+    """用系统默认播放器打开音频"""
+    try:
+        os.startfile(str(file_path))
+        print(f"  ✓ 已用默认播放器打开 reference.wav")
+    except Exception as e:
+        print(f"  ⚠ 无法自动打开播放器: {e}")
+
+
+# ============================================================
+# --apply-edit：按 edit.txt 切分 + 聚类 + 标注
+# ============================================================
+
+def parse_edit_txt(edit_path):
+    """
+    解析 edit.txt，按空行分组。
+
+    每组 = 一个切片：
+    - 起始时间 = 组内第一行的 start
+    - 结束时间 = 组内最后一行的 end
+    - 文本 = 组内各行文本拼接
+
+    返回: [{start, end, text}, ...]
+    """
+    with open(edit_path, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    # 按空行分组
+    groups = []
+    current_group = []
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            if current_group:
+                groups.append(current_group)
+                current_group = []
+        else:
+            current_group.append(stripped)
+
+    if current_group:
+        groups.append(current_group)
+
+    # 解析每组
+    line_pattern = re.compile(r"^\[(\d+m\d+(?:\.\d+)?s)-(\d+m\d+(?:\.\d+)?s)\]\s*(.*)$")
+    segments = []
+
+    for group in groups:
+        group_start = None
+        group_end = None
+        texts = []
+
+        for line in group:
+            match = line_pattern.match(line)
+            if not match:
+                print(f"  ⚠ 无法解析行: {line}")
+                continue
+
+            start_str, end_str, text = match.groups()
+            start = parse_time(start_str)
+            end = parse_time(end_str)
+
+            if group_start is None:
+                group_start = start
+            group_end = end
+            if text.strip():
+                texts.append(text.strip())
+
+        if group_start is not None and group_end is not None and texts:
+            segments.append({
+                "start": float(group_start),
+                "end": float(group_end),
+                "text": "".join(texts),
+            })
 
     return segments
 
 
-# ============================================================
-# 音频切分
-# ============================================================
+def compare_with_previous_data(old_segments, new_segments):
+    """对比新旧 segments，打印变化（时间调整 + 新切片）"""
+    if not old_segments:
+        return
 
-def split_audio_clips(source_audio, segments, clips_dir):
-    """按 segments 时间戳切分音频为独立 WAV 文件"""
-    print(f"  [切分] 生成音频片段...")
+    # 建立旧切片的时间范围索引（用 start 做粗匹配）
+    old_by_start = {}
+    for seg in old_segments:
+        key = round(seg["start"], 2)
+        old_by_start[key] = seg
+
+    changes = []  # [(type, index, text, old_range, new_range)]
+
+    for i, seg in enumerate(new_segments, 1):
+        new_start = round(seg["start"], 2)
+        new_end = round(seg["end"], 2)
+        text = seg["text"]
+
+        # 尝试匹配旧切片（start 相同或非常接近）
+        matched_old = None
+        for old_start, old_seg in old_by_start.items():
+            if abs(old_start - new_start) < 0.5:
+                matched_old = old_seg
+                break
+
+        if matched_old:
+            old_start_r = round(matched_old["start"], 2)
+            old_end_r = round(matched_old["end"], 2)
+            # 时间有变化
+            if abs(old_end_r - new_end) >= 0.05 or abs(old_start_r - new_start) >= 0.05:
+                old_range = f"{format_time(matched_old['start'])}-{format_time(matched_old['end'])}"
+                new_range = f"{format_time(seg['start'])}-{format_time(seg['end'])}"
+                changes.append(("时间调整", i, text, old_range, new_range))
+        else:
+            # 旧的里没找到 → 新切片
+            new_range = f"{format_time(seg['start'])}-{format_time(seg['end'])}"
+            changes.append(("新切片", i, text, "", new_range))
+
+    if not changes:
+        print(f"\n  [对比上次] edit.txt 无变化")
+        return
+
+    # 按序号排序
+    changes.sort(key=lambda x: x[1])
+
+    print(f"\n  [对比上次] edit.txt 有变化 (切片数: {len(old_segments)} → {len(new_segments)}):\n")
+    for change_type, index, text, old_range, new_range in changes:
+        print(f"    [{change_type}] {index:03d} \"{text}\"")
+        if old_range:
+            print(f"             {old_range} → {new_range}")
+        else:
+            print(f"             {new_range}")
+        print()
+
+
+def apply_edit(namespace, episode_name, config, no_label=False):
+    """按 edit.txt 切分音频 + 聚类 + 标注"""
+    episode_dir = Path("output") / namespace / episode_name
+    edit_path = episode_dir / "edit.txt"
+    clips_dir = episode_dir / "clips"
+
+    # 检查 edit.txt 存在
+    if not edit_path.exists():
+        print(f"❌ edit.txt 不存在: {edit_path}")
+        print(f"   请先运行: python process.py --namespace {namespace} --gen-edit {episode_name}.wav")
+        sys.exit(1)
+
+    # 找到源 WAV
+    wav_path = Path("wavs") / namespace / f"{episode_name}.wav"
+    if not wav_path.exists():
+        print(f"❌ 源 WAV 不存在: {wav_path}")
+        sys.exit(1)
+
+    print(f"\n{'='*60}")
+    print(f"应用编辑: {namespace}/{episode_name}")
+    print(f"{'='*60}")
+
+    # 步骤 1：解析 edit.txt
+    print(f"  [解析] 读取 edit.txt...")
+    segments = parse_edit_txt(edit_path)
+    if not segments:
+        print(f"  ❌ edit.txt 中无有效内容")
+        sys.exit(1)
+    print(f"  ✓ 解析完成: {len(segments)} 个切片")
+
+    # 记住旧 segments.json 路径，最后对比用
+    segments_path = episode_dir / "segments.json"
+    old_segments = None
+    if segments_path.exists():
+        with open(segments_path, "r", encoding="utf-8") as f:
+            old_segments = json.load(f)
+
+    # 步骤 2：切分音频（清空重建 clips/）
+    if clips_dir.exists():
+        shutil.rmtree(clips_dir)
     clips_dir.mkdir(parents=True, exist_ok=True)
 
-    count = 0
+    print(f"  [切分] 从源 WAV 切分音频片段...")
     for i, seg in enumerate(segments, 1):
+        seg["index"] = i
+        seg["cluster"] = None
+        seg["speaker"] = None
+        seg["score"] = None
+
         start_str = format_time(seg["start"])
         end_str = format_time(seg["end"])
         filename = f"{i:03d}_{start_str}-{end_str}.wav"
@@ -359,7 +601,7 @@ def split_audio_clips(source_audio, segments, clips_dir):
         duration = seg["end"] - seg["start"] + 0.3  # 末尾加缓冲
         cmd = [
             "ffmpeg", "-y",
-            "-i", str(source_audio),
+            "-i", str(wav_path),
             "-ss", str(seg["start"]),
             "-t", str(duration),
             "-vn",
@@ -369,13 +611,34 @@ def split_audio_clips(source_audio, segments, clips_dir):
         ]
         result = subprocess.run(cmd, capture_output=True)
         if result.returncode == 0:
-            count += 1
             seg["file"] = filename
         else:
             seg["file"] = None
+            print(f"    ⚠ 切分第 {i} 个片段失败")
 
-    print(f"  ✓ 切分完成，共 {count}/{len(segments)} 个片段")
-    return count
+    valid_count = sum(1 for s in segments if s["file"])
+    print(f"  ✓ 切分完成: {valid_count}/{len(segments)} 个片段")
+
+    # 步骤 3：匿名聚类
+    embedding_model = load_embedding_model()
+    run_clustering(segments, clips_dir, embedding_model, config)
+
+    # 步骤 4：角色标注（可选）
+    if not no_label:
+        label_by_cluster(segments, clips_dir, embedding_model, namespace, config)
+
+    # 步骤 5：保存 segments.json
+    with open(segments_path, "w", encoding="utf-8") as f:
+        json.dump(segments, f, ensure_ascii=False, indent=2)
+    print(f"  ✓ 已保存 segments.json")
+
+    # 对比上次结果（最后输出）
+    if old_segments:
+        compare_with_previous_data(old_segments, segments)
+
+    print(f"\n{'='*60}")
+    print(f"完成！输出目录: {episode_dir}")
+    print(f"{'='*60}")
 
 
 # ============================================================
@@ -384,14 +647,14 @@ def split_audio_clips(source_audio, segments, clips_dir):
 
 def load_embedding_model():
     """加载 3D-Speaker ERes2NetV2 embedding 模型"""
-    print("加载声纹 embedding 模型...")
+    print("  加载声纹 embedding 模型...")
     from funasr import AutoModel
 
     model = AutoModel(
         model="iic/speech_eres2netv2_sv_zh-cn_16k-common",
         device="cuda:0",
     )
-    print("✓ embedding 模型加载完成")
+    print("  ✓ embedding 模型加载完成")
     return model
 
 
@@ -399,7 +662,6 @@ def extract_embedding(model, wav_path):
     """对单个 WAV 文件提取 embedding 向量"""
     res = model.generate(input=str(wav_path))
     embedding = res[0]["spk_embedding"]
-    # 处理 torch tensor（可能在 GPU 上）
     if hasattr(embedding, "cpu"):
         embedding = embedding.cpu().numpy()
     if isinstance(embedding, np.ndarray):
@@ -413,12 +675,7 @@ def extract_embedding(model, wav_path):
 
 
 def cluster_speakers(embeddings, threshold=0.30):
-    """
-    对所有切片的 embedding 做层次聚类。
-
-    threshold: 距离阈值（1 - cosine_similarity）
-    返回: labels 数组
-    """
+    """对所有切片的 embedding 做层次聚类"""
     from sklearn.cluster import AgglomerativeClustering
 
     if len(embeddings) <= 1:
@@ -435,14 +692,9 @@ def cluster_speakers(embeddings, threshold=0.30):
 
 
 def assign_cluster_labels(labels):
-    """
-    按片段数量降序分配匿名标签：角色1、角色2...
-
-    返回: dict mapping original_label -> "角色X"
-    """
+    """按片段数量降序分配匿名标签：角色1、角色2..."""
     from collections import Counter
     counts = Counter(labels)
-    # 按数量降序排列
     sorted_clusters = sorted(counts.keys(), key=lambda k: counts[k], reverse=True)
     label_map = {}
     for rank, cluster_id in enumerate(sorted_clusters, 1):
@@ -456,7 +708,6 @@ def run_clustering(segments, clips_dir, embedding_model, config):
     min_duration = config.get("clustering", {}).get("min_duration", 1.0)
     distance_threshold = config.get("clustering", {}).get("distance_threshold", 0.30)
 
-    # 提取有效片段的 embedding
     valid_indices = []
     embeddings = []
 
@@ -480,12 +731,10 @@ def run_clustering(segments, clips_dir, embedding_model, config):
     embeddings_array = np.array(embeddings)
     labels = cluster_speakers(embeddings_array, threshold=distance_threshold)
 
-    # 分配匿名标签
     label_map = assign_cluster_labels(labels)
 
     for idx, seg_i in enumerate(valid_indices):
-        cluster_label = label_map[labels[idx]]
-        segments[seg_i]["cluster"] = cluster_label
+        segments[seg_i]["cluster"] = label_map[labels[idx]]
 
     # 统计
     from collections import Counter
@@ -494,14 +743,14 @@ def run_clustering(segments, clips_dir, embedding_model, config):
     for name, count in sorted(cluster_counts.items(), key=lambda x: x[1], reverse=True):
         print(f"    {name}: {count} 个片段")
 
-    # 重命名切片文件（加上 cluster 标签）
-    rename_clips_by_cluster(segments, clips_dir)
+    # 重命名切片文件
+    rename_clips(segments, clips_dir)
 
 
-def rename_clips_by_cluster(segments, clips_dir):
-    """重命名切片文件：{序号}_{时间}_{角色X}.wav"""
+def rename_clips(segments, clips_dir):
+    """重命名切片文件：{序号}_{时间}_{标签}.wav"""
     rename_count = 0
-    for i, seg in enumerate(segments, 1):
+    for seg in segments:
         old_file = seg.get("file")
         if not old_file or not seg.get("cluster"):
             continue
@@ -510,12 +759,16 @@ def rename_clips_by_cluster(segments, clips_dir):
         if not old_path.exists():
             continue
 
+        label = seg.get("speaker") or seg.get("cluster")
         start_str = format_time(seg["start"])
         end_str = format_time(seg["end"])
-        new_file = f"{i:03d}_{start_str}-{end_str}_{seg['cluster']}.wav"
+        new_file = f"{seg['index']:03d}_{start_str}-{end_str}_{label}.wav"
         new_path = clips_dir / new_file
 
         if old_path != new_path:
+            # 避免目标已存在的冲突
+            if new_path.exists() and old_path != new_path:
+                new_path.unlink()
             old_path.rename(new_path)
             seg["file"] = new_file
             rename_count += 1
@@ -610,198 +863,29 @@ def label_by_cluster(segments, clips_dir, embedding_model, namespace, config):
 
     print(f"  ✓ 标注完成: {labeled_count}/{len(segments)} 个片段已识别角色")
 
-    # 打印匹配结果
     for cluster_name in sorted(cluster_to_speaker.keys()):
         speaker = cluster_to_speaker[cluster_name]
         score = cluster_scores[cluster_name]
         status = f"→ {speaker} ({score:.3f})" if speaker else f"→ 未匹配 ({score:.3f})"
         print(f"    {cluster_name} {status}")
 
-    # 重命名切片文件（加上角色名）
-    rename_clips_by_speaker(segments, clips_dir)
-
-
-def rename_clips_by_speaker(segments, clips_dir):
-    """重命名切片文件：{序号}_{时间}_{角色名}.wav"""
-    rename_count = 0
-    for i, seg in enumerate(segments, 1):
-        old_file = seg.get("file")
-        if not old_file:
-            continue
-
-        old_path = clips_dir / old_file
-        if not old_path.exists():
-            continue
-
-        # 用 speaker 或 cluster 作为标签
-        label = seg.get("speaker") or seg.get("cluster") or "unknown"
-        start_str = format_time(seg["start"])
-        end_str = format_time(seg["end"])
-        new_file = f"{i:03d}_{start_str}-{end_str}_{label}.wav"
-        new_path = clips_dir / new_file
-
-        if old_path != new_path:
-            old_path.rename(new_path)
-            seg["file"] = new_file
-            rename_count += 1
-
-    if rename_count > 0:
-        print(f"  ✓ 重命名 {rename_count} 个文件（角色标签）")
+    # 重命名切片文件（用角色名替换 cluster 标签）
+    rename_clips(segments, clips_dir)
 
 
 # ============================================================
-# 主流程
-# ============================================================
-
-def process_single_wav(wav_path, output_dir, asr_model, embedding_model, ns_config, config, no_label=False):
-    """处理单个 WAV 文件的完整流程"""
-    wav_stem = wav_path.stem
-    episode_dir = output_dir / wav_stem
-    clips_dir = episode_dir / "clips"
-
-    print(f"\n{'='*60}")
-    print(f"处理: {wav_path.name}")
-    print(f"{'='*60}")
-
-    # 步骤 1：音频转换
-    temp_16k = episode_dir / "_temp_16k.wav"
-    episode_dir.mkdir(parents=True, exist_ok=True)
-
-    print(f"  [转换] 转为 16kHz mono...")
-    if not convert_to_16k_mono(wav_path, temp_16k):
-        print(f"  ❌ 音频转换失败")
-        return False
-
-    try:
-        # 步骤 2：ASR 识别
-        hotwords = ns_config.get("hotwords", "")
-        segments = transcribe_audio(temp_16k, asr_model, hotwords)
-
-        if not segments:
-            print("  ⚠ 未识别到任何对话")
-            return False
-
-        # 步骤 3：后处理
-        corrections = ns_config.get("corrections", {})
-        min_duration = config.get("clustering", {}).get("min_duration", 1.0)
-        raw_count = len(segments)
-        segments = postprocess_segments(segments, corrections, min_duration)
-        print(f"  ✓ 识别完成: 原始 {raw_count} 句 → 处理后 {len(segments)} 句")
-
-        # 初始化 segments.json 字段
-        for i, seg in enumerate(segments, 1):
-            seg["index"] = i
-            seg["cluster"] = None
-            seg["speaker"] = None
-            seg["score"] = None
-            seg["file"] = None
-
-        # 步骤 4：切分音频
-        split_audio_clips(temp_16k, segments, clips_dir)
-
-        # 步骤 5：匿名聚类
-        run_clustering(segments, clips_dir, embedding_model, config)
-
-        # 步骤 6：角色标注（可选）
-        namespace = output_dir.name
-        if not no_label:
-            label_by_cluster(segments, clips_dir, embedding_model, namespace, config)
-
-        # 保存 segments.json
-        segments_path = episode_dir / "segments.json"
-        with open(segments_path, "w", encoding="utf-8") as f:
-            json.dump(segments, f, ensure_ascii=False, indent=2)
-        print(f"  ✓ 已保存 segments.json")
-
-        return True
-
-    finally:
-        # 清理临时文件
-        if temp_16k.exists():
-            temp_16k.unlink()
-
-
-def process_namespace(namespace, config, no_label=False):
-    """处理整个命名空间"""
-    wavs_dir = Path("wavs") / namespace
-    output_dir = Path("output") / namespace
-
-    if not wavs_dir.exists():
-        print(f"❌ 输入目录不存在: {wavs_dir}")
-        sys.exit(1)
-
-    # 扫描 WAV 文件
-    wav_files = sorted(wavs_dir.glob("*.wav"))
-    if not wav_files:
-        print(f"❌ 在 {wavs_dir} 中未找到 .wav 文件")
-        sys.exit(1)
-
-    # 增量检查
-    to_process = []
-    for wav_path in wav_files:
-        episode_dir = output_dir / wav_path.stem
-        if episode_dir.exists():
-            print(f"  [跳过] {wav_path.name}（已存在 output/{namespace}/{wav_path.stem}/）")
-        else:
-            to_process.append(wav_path)
-
-    if not to_process:
-        print(f"\n所有 WAV 文件均已处理完毕，无新增文件。")
-        print(f"如需重新处理某集，删除 output/{namespace}/{{文件夹名}}/ 后重跑。")
-        return
-
-    print(f"\n找到 {len(wav_files)} 个 WAV 文件，其中 {len(to_process)} 个待处理:")
-    for f in to_process:
-        print(f"  - {f.name}")
-
-    # 加载模型
-    print(f"\n加载 ASR 模型...")
-    from funasr import AutoModel
-
-    asr_model = AutoModel(
-        model="iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch",
-        model_revision="v2.0.4",
-        vad_model="fsmn-vad",
-        vad_kwargs={"max_single_segment_time": 60000},
-        punc_model="ct-punc",
-        device="cuda:0",
-    )
-    print("✓ ASR 模型加载完成")
-
-    embedding_model = load_embedding_model()
-
-    # 获取命名空间配置
-    ns_config = get_namespace_config(config, namespace)
-
-    # 创建输出目录
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # 逐个处理
-    success_count = 0
-    for wav_path in to_process:
-        if process_single_wav(wav_path, output_dir, asr_model, embedding_model, ns_config, config, no_label):
-            success_count += 1
-
-    print(f"\n{'='*60}")
-    print(f"完成！成功处理 {success_count}/{len(to_process)} 个文件")
-    print(f"输出目录: {output_dir.resolve()}")
-    print(f"{'='*60}")
-
-
-# ============================================================
-# --label 子命令：仅重新标注
+# --label：仅重新标注
 # ============================================================
 
 def label_only(target, config):
     """仅对已有的 segments.json 重新标注角色"""
-    # 解析 target: "namespace/episode" 或 "namespace"
     parts = target.split("/")
     if len(parts) == 2:
         namespace, episode = parts
         episodes = [episode]
     elif len(parts) == 1:
         namespace = parts[0]
-        episodes = None  # 处理全部
+        episodes = None
     else:
         print(f"❌ 格式错误，应为: namespace/episode 或 namespace")
         sys.exit(1)
@@ -811,7 +895,6 @@ def label_only(target, config):
         print(f"❌ 目录不存在: {output_dir}")
         sys.exit(1)
 
-    # 确定要处理的目录
     if episodes:
         dirs_to_process = [output_dir / ep for ep in episodes]
     else:
@@ -821,7 +904,6 @@ def label_only(target, config):
         print(f"❌ 未找到任何已处理的目录")
         sys.exit(1)
 
-    # 加载模型
     embedding_model = load_embedding_model()
 
     for ep_dir in dirs_to_process:
@@ -839,10 +921,8 @@ def label_only(target, config):
         with open(segments_path, "r", encoding="utf-8") as f:
             segments = json.load(f)
 
-        # 重新标注
         label_by_cluster(segments, clips_dir, embedding_model, namespace, config)
 
-        # 保存
         with open(segments_path, "w", encoding="utf-8") as f:
             json.dump(segments, f, ensure_ascii=False, indent=2)
         print(f"  ✓ 已更新 segments.json")
@@ -860,31 +940,54 @@ def main():
     )
     parser.add_argument("--namespace", "-n",
                         help="命名空间（如: 魔幻手机）")
+    parser.add_argument("--gen-edit",
+                        help="生成 edit.txt + reference.wav（指定 WAV 文件名，如: EP01.wav）")
+    parser.add_argument("--apply-edit",
+                        help="按 edit.txt 切分（指定 episode 名，如: EP01）")
     parser.add_argument("--no-label", action="store_true",
                         help="不做角色标注，只切分+聚类")
     parser.add_argument("--label", "-l",
                         help="仅重新标注（格式: namespace/episode 或 namespace）")
     args = parser.parse_args()
 
-    # 加载配置
     config = load_config()
 
     # --label 模式
     if args.label:
+        if not check_ffmpeg():
+            print("❌ FFmpeg 未安装或未在 PATH 中")
+            sys.exit(1)
         label_only(args.label, config)
         return
 
-    # 正常处理模式
+    # 需要 namespace
     if not args.namespace:
         print("❌ 请指定命名空间: --namespace 魔幻手机")
+        parser.print_help()
         sys.exit(1)
 
-    # 检查 FFmpeg
     if not check_ffmpeg():
         print("❌ FFmpeg 未安装或未在 PATH 中")
         sys.exit(1)
 
-    process_namespace(args.namespace, config, no_label=args.no_label)
+    # --gen-edit 模式
+    if args.gen_edit:
+        gen_edit(args.namespace, args.gen_edit, config)
+        return
+
+    # --apply-edit 模式
+    if args.apply_edit:
+        apply_edit(args.namespace, args.apply_edit, config, no_label=args.no_label)
+        return
+
+    # 未指定操作
+    print("❌ 请指定操作: --gen-edit 或 --apply-edit")
+    print()
+    print("用法:")
+    print("  python process.py --namespace 魔幻手机 --gen-edit EP01.wav")
+    print("  python process.py --namespace 魔幻手机 --apply-edit EP01")
+    print("  python process.py --label 魔幻手机/EP01")
+    sys.exit(1)
 
 
 if __name__ == "__main__":
