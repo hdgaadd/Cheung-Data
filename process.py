@@ -716,7 +716,7 @@ def run_clustering(segments, clips_dir, embedding_model, config):
         clip_path = clips_dir / seg.get("file", "")
 
         if duration < min_duration or not seg.get("file") or not clip_path.exists():
-            seg["cluster"] = None
+            seg["cluster"] = "过短" if duration < min_duration else None
             continue
 
         valid_indices.append(i)
@@ -752,7 +752,7 @@ def rename_clips(segments, clips_dir):
     rename_count = 0
     for seg in segments:
         old_file = seg.get("file")
-        if not old_file or not seg.get("cluster"):
+        if not old_file:
             continue
 
         old_path = clips_dir / old_file
@@ -760,6 +760,9 @@ def rename_clips(segments, clips_dir):
             continue
 
         label = seg.get("speaker") or seg.get("cluster")
+        if not label:
+            continue
+
         start_str = format_time(seg["start"])
         end_str = format_time(seg["end"])
         new_file = f"{seg['index']:03d}_{start_str}-{end_str}_{label}.wav"
