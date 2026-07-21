@@ -25,7 +25,6 @@ import re
 from pathlib import Path
 
 import numpy as np
-import soundfile as sf
 
 
 # ============================================================
@@ -343,19 +342,24 @@ def gen_edit(namespace, wav_filename, config):
 
         print(f"  ✓ edit.txt 已生成 ({len(phrases)} 行)")
 
-        # 步骤 4：生成 reference.wav
-        print(f"  [生成] 拼接 reference.wav...")
-        reference_path = episode_dir / "reference.wav"
-        generate_reference_wav(temp_16k, phrases, reference_path)
-        print(f"  ✓ reference.wav 已生成")
+        # 步骤 4：生成 reference.mp4（如果有同名 .mp4）
+        mp4_path = wavs_dir / f"{wav_stem}.mp4"
+        if mp4_path.exists():
+            print(f"  [生成] 拼接 reference.mp4...")
+            reference_mp4_path = episode_dir / "reference.mp4"
+            generate_reference_mp4(mp4_path, phrases, reference_mp4_path)
+            print(f"  ✓ reference.mp4 已生成")
+        else:
+            print(f"  [跳过] 未找到同名 .mp4，不生成 reference.mp4")
 
         # 步骤 5：自动打开
         open_editor(edit_path)
-        open_player(reference_path)
+        if mp4_path.exists():
+            open_player(episode_dir / "reference.mp4")
 
         print(f"\n{'='*60}")
         print(f"完成！请编辑后运行:")
-        print(f"  python process.py --namespace {namespace} --apply-edit {wav_stem}")
+        print(f"  python process.py --namespace {namespace} --apply-edit \"{wav_stem}\"")
         print(f"{'='*60}")
 
     finally:
@@ -363,38 +367,93 @@ def gen_edit(namespace, wav_filename, config):
             temp_16k.unlink()
 
 
-def generate_reference_wav(source_wav, phrases, output_path, silence_duration=2.0):
+def generate_reference_mp4(source_mp4, phrases, output_path, silence_duration=2.0):
     """
-    将 ASR 短句音频按顺序拼接，片段间插入静音，生成 reference.wav。
+    按 ASR 短句时间戳从源 MP4 切出片段，按句末标点位置插入黑屏，拼接为 reference.mp4。
 
-    每个片段与 edit.txt 每行一一对应。
+    句末标点（。？！；…）后插入黑屏 = edit.txt 中的空行位置。
     """
-    # 读取源音频
-    data, sr = sf.read(str(source_wav))
+    import tempfile
 
-    # 静音片段
-    silence = np.zeros(int(silence_duration * sr))
+    temp_dir = Path(tempfile.mkdtemp())
+    segment_files = []
 
-    # 拼接
-    pieces = []
-    for i, phrase in enumerate(phrases):
-        start_sample = int(phrase["start"] * sr)
-        end_sample = int(phrase["end"] * sr)
+    try:
+        # 先获取源视频分辨率
+        probe_cmd = [
+            "ffprobe", "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-of", "csv=p=0",
+            str(source_mp4),
+        ]
+        probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
+        if probe_result.returncode == 0 and probe_result.stdout.strip():
+            resolution = probe_result.stdout.strip().replace(",", "x")
+        else:
+            resolution = "1280x720"
 
-        # 边界保护
-        start_sample = max(0, start_sample)
-        end_sample = min(len(data), end_sample)
+        # 生成一个黑屏静音片段（只生成一次）
+        black_path = temp_dir / "black.ts"
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i", f"color=c=black:s={resolution}:d={silence_duration}:r=24",
+            "-f", "lavfi", "-i", f"anullsrc=r=44100:cl=stereo",
+            "-t", str(silence_duration),
+            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+            "-c:a", "aac",
+            str(black_path),
+        ]
+        subprocess.run(cmd, capture_output=True)
 
-        if start_sample < end_sample:
-            pieces.append(data[start_sample:end_sample])
+        # 切出每个片段
+        for i, phrase in enumerate(phrases):
+            segment_path = temp_dir / f"seg_{i:04d}.ts"
+            duration = phrase["end"] - phrase["start"]
+            if duration <= 0:
+                continue
 
-        # 片段间插入静音（最后一个片段后不加）
-        if i < len(phrases) - 1:
-            pieces.append(silence)
+            cmd = [
+                "ffmpeg", "-y",
+                "-ss", str(phrase["start"]),
+                "-i", str(source_mp4),
+                "-t", str(duration),
+                "-c:v", "libx264", "-preset", "ultrafast",
+                "-c:a", "aac",
+                "-avoid_negative_ts", "make_zero",
+                str(segment_path),
+            ]
+            result = subprocess.run(cmd, capture_output=True)
+            if result.returncode == 0 and segment_path.exists() and segment_path.stat().st_size > 0:
+                segment_files.append(segment_path)
 
-    if pieces:
-        combined = np.concatenate(pieces)
-        sf.write(str(output_path), combined, sr)
+                # 句末标点后插入黑屏（对应 edit.txt 空行位置）
+                if i < len(phrases) - 1 and is_sentence_end(phrase["text"]):
+                    segment_files.append(black_path)
+
+        if not segment_files:
+            print(f"  ⚠ 未能生成任何视频片段")
+            return
+
+        # 写 concat 列表
+        concat_list = temp_dir / "concat.txt"
+        with open(concat_list, "w", encoding="utf-8") as f:
+            for seg_file in segment_files:
+                f.write(f"file '{seg_file}'\n")
+
+        # 拼接
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "concat", "-safe", "0",
+            "-i", str(concat_list),
+            "-c", "copy",
+            str(output_path),
+        ]
+        subprocess.run(cmd, capture_output=True)
+
+    finally:
+        # 清理临时文件
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def open_editor(file_path):
@@ -412,10 +471,10 @@ def open_editor(file_path):
 
 
 def open_player(file_path):
-    """用系统默认播放器打开音频"""
+    """用系统默认播放器打开文件"""
     try:
         os.startfile(str(file_path))
-        print(f"  ✓ 已用默认播放器打开 reference.wav")
+        print(f"  ✓ 已用默认播放器打开 {Path(file_path).name}")
     except Exception as e:
         print(f"  ⚠ 无法自动打开播放器: {e}")
 
