@@ -26,6 +26,10 @@ videos/
 
 # 处理输出（可重新生成，但 edit.txt 是人工编辑成果需要保留）
 output/
+!output/
+output/**
+!output/*/
+!output/**/
 !output/**/edit.txt
 
 # 导出输出（可重新生成）
