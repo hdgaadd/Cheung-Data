@@ -657,7 +657,7 @@ def apply_edit(namespace, episode_name, config, no_label=False):
         filename = f"{i:03d}_{start_str}-{end_str}.wav"
         output_path = clips_dir / filename
 
-        duration = seg["end"] - seg["start"] + 0.3  # 末尾加缓冲
+        duration = seg["end"] - seg["start"]
         cmd = [
             "ffmpeg", "-y",
             "-i", str(wav_path),
