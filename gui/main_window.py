@@ -2,15 +2,16 @@
 主窗口 - 整体布局：顶部选择器 + 左侧导航 + 中间内容 + 进度条 + 底部日志。
 """
 
+import json
 from pathlib import Path
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QStackedWidget, QLabel,
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QSettings
 from qfluentwidgets import (
     NavigationInterface, NavigationItemPosition,
-    ComboBox, ProgressBar,
+    ComboBox, ProgressRing,
 )
 from qfluentwidgets import FluentIcon as FIF
 
@@ -31,6 +32,35 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Cheung-Data")
         self.resize(1100, 750)
 
+        # 圆角窗口 + 深色文字
+        self.setStyleSheet("""
+            QMainWindow {
+                background: #fafafa;
+                border-radius: 10px;
+            }
+            QLabel {
+                color: #111111;
+                font-size: 13px;
+                font-weight: 500;
+            }
+            QTableWidget {
+                color: #111111;
+                font-size: 13px;
+                font-weight: 400;
+            }
+            QTextEdit {
+                color: #111111;
+                font-weight: 400;
+                border-radius: 8px;
+                border: 1px solid #e0e0e0;
+                background: #ffffff;
+            }
+        """)
+
+        # 恢复上次窗口大小
+        self._settings = QSettings("CheungData", "GUI")
+        self._restore_geometry()
+
         # 中央 widget
         central = QWidget()
         self.setCentralWidget(central)
@@ -41,7 +71,7 @@ class MainWindow(QMainWindow):
         # ═══ 顶部选择器 ═══
         top_bar = QWidget()
         top_bar.setFixedHeight(48)
-        top_bar.setStyleSheet("background: #f5f5f5; border-bottom: 1px solid #ddd;")
+        top_bar.setStyleSheet("background: #f0f0f0; border-bottom: 1px solid #ddd;")
         top_layout = QHBoxLayout(top_bar)
         top_layout.setContentsMargins(16, 8, 16, 8)
 
@@ -78,19 +108,22 @@ class MainWindow(QMainWindow):
 
         root_layout.addWidget(middle, 1)
 
-        # ═══ 进度条 ═══
-        self._progress_bar = ProgressBar()
-        self._progress_bar.setFixedHeight(24)
-        self._progress_bar.setVisible(False)
-        self._progress_label = QLabel("")
-        self._progress_label.setStyleSheet("font-size: 12px; padding-left: 8px;")
-        self._progress_label.setVisible(False)
-
+        # ═══ 进度条（ProgressRing） ═══
         progress_widget = QWidget()
+        progress_widget.setFixedHeight(40)
         progress_layout = QHBoxLayout(progress_widget)
         progress_layout.setContentsMargins(16, 4, 16, 4)
-        progress_layout.addWidget(self._progress_bar, 1)
+
+        self._progress_ring = ProgressRing()
+        self._progress_ring.setFixedSize(28, 28)
+        self._progress_ring.setTextVisible(False)
+        progress_layout.addWidget(self._progress_ring)
+
+        self._progress_label = QLabel("")
+        self._progress_label.setStyleSheet("font-size: 12px; color: #333; padding-left: 8px;")
         progress_layout.addWidget(self._progress_label)
+        progress_layout.addStretch()
+
         self._progress_widget = progress_widget
         self._progress_widget.setVisible(False)
         root_layout.addWidget(self._progress_widget)
@@ -177,15 +210,26 @@ class MainWindow(QMainWindow):
         return self._wav_combo.currentText()
 
     def show_progress(self, percent: int, text: str = ""):
-        """显示进度条。"""
+        """显示进度。"""
         self._progress_widget.setVisible(True)
-        self._progress_bar.setVisible(True)
-        self._progress_label.setVisible(True)
-        self._progress_bar.setValue(percent)
+        self._progress_ring.setValue(percent)
         self._progress_label.setText(text)
 
     def hide_progress(self):
-        """隐藏进度条。"""
+        """隐藏进度。"""
         self._progress_widget.setVisible(False)
-        self._progress_bar.setVisible(False)
-        self._progress_label.setVisible(False)
+        self._progress_ring.setValue(0)
+        self._progress_label.setText("")
+
+    # ═══ 窗口大小记忆 ═══
+
+    def _restore_geometry(self):
+        """恢复上次窗口大小和位置。"""
+        geom = self._settings.value("geometry")
+        if geom:
+            self.restoreGeometry(geom)
+
+    def closeEvent(self, event):
+        """关闭时保存窗口大小。"""
+        self._settings.setValue("geometry", self.saveGeometry())
+        super().closeEvent(event)

@@ -1,25 +1,20 @@
 """
-音频播放组件 - 用 QMediaPlayer 播放 WAV 片段。
+音频播放组件 - 用系统默认播放器打开 WAV 文件。
 """
 
+import os
 from pathlib import Path
-from PySide6.QtCore import QUrl
-from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
 
 class AudioPlayer:
-    """简单的音频播放器，全局单例使用。"""
-
-    def __init__(self):
-        self._player = QMediaPlayer()
-        self._audio_output = QAudioOutput()
-        self._player.setAudioOutput(self._audio_output)
+    """用系统默认播放器播放音频。"""
 
     def play(self, wav_path: str | Path):
-        """播放指定 WAV 文件，自动停止上一个。"""
-        self._player.stop()
-        self._player.setSource(QUrl.fromLocalFile(str(Path(wav_path).resolve())))
-        self._player.play()
+        """用系统默认播放器打开 WAV 文件。"""
+        path = Path(wav_path).resolve()
+        if path.exists():
+            os.startfile(str(path))
 
     def stop(self):
-        self._player.stop()
+        """无需操作（系统播放器独立进程）。"""
+        pass

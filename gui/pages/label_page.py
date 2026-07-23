@@ -112,10 +112,28 @@ class LabelPage(QWidget):
             return {"segments": new_segments, "changes": changes or []}
 
         self._worker = TaskWorker(task)
-        self._worker.log.connect(self._main.log_panel.append)
+        self._worker.log.connect(self._on_log)
         self._worker.finished_ok.connect(self._on_done)
         self._worker.finished_err.connect(self._on_error)
         self._worker.start()
+
+    def _on_log(self, text):
+        """日志回调，同时根据关键字更新进度。"""
+        self._main.log_panel.append(text)
+        if "解析完成" in text:
+            self._main.show_progress(15, "解析完成，切分中...")
+        elif "切分完成" in text:
+            self._main.show_progress(40, "切分完成，提取embedding...")
+        elif "提取声纹" in text:
+            self._main.show_progress(50, "提取声纹 embedding...")
+        elif "层次聚类" in text:
+            self._main.show_progress(70, "聚类中...")
+        elif "聚类完成" in text:
+            self._main.show_progress(80, "标注中...")
+        elif "标注完成" in text:
+            self._main.show_progress(90, "保存中...")
+        elif "已保存" in text:
+            self._main.show_progress(95, "对比结果...")
 
     def _on_done(self, result):
         self._exec_btn.setEnabled(True)

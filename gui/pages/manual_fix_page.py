@@ -5,6 +5,7 @@
 """
 
 import json
+import math
 from pathlib import Path
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
@@ -12,12 +13,15 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 from qfluentwidgets import (
-    PrimaryPushButton, ComboBox, TableWidget, CheckBox, ToolButton,
+    PrimaryPushButton, PushButton, ComboBox, TableWidget, CheckBox, ToolButton,
 )
 from qfluentwidgets import FluentIcon as FIF
 
 from gui.widgets.audio_player import AudioPlayer
 from process import format_time, rename_clips
+
+
+PAGE_SIZE = 10
 
 
 class ManualFixPage(QWidget):
@@ -30,13 +34,22 @@ class ManualFixPage(QWidget):
         self._segments = []
         self._untagged = []  # 筛选后的待标注片段
         self._checkboxes = []
+        self._page = 0
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(12)
 
-        # 标题
-        layout.addWidget(QLabel("未标注/过短的片段:"))
+        # 标题 + 全选
+        header_layout = QHBoxLayout()
+        header_layout.addWidget(QLabel("未标注/过短的片段:"))
+        header_layout.addSpacing(16)
+        self._select_all_cb = CheckBox("全选")
+        self._select_all_cb.setChecked(True)
+        self._select_all_cb.stateChanged.connect(self._toggle_all)
+        header_layout.addWidget(self._select_all_cb)
+        header_layout.addStretch()
+        layout.addLayout(header_layout)
 
         # 表格
         self._table = TableWidget(self)
@@ -52,6 +65,26 @@ class ManualFixPage(QWidget):
         self._table.setColumnWidth(5, 40)
         self._table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
         layout.addWidget(self._table)
+
+        # 分页栏
+        pager_layout = QHBoxLayout()
+        pager_layout.addStretch()
+        self._btn_prev = PushButton("◀")
+        self._btn_prev.setFixedWidth(40)
+        self._btn_prev.clicked.connect(self._prev_page)
+        pager_layout.addWidget(self._btn_prev)
+
+        self._page_label = PushButton("1 / 1")
+        self._page_label.setEnabled(False)
+        self._page_label.setFixedWidth(80)
+        pager_layout.addWidget(self._page_label)
+
+        self._btn_next = PushButton("▶")
+        self._btn_next.setFixedWidth(40)
+        self._btn_next.clicked.connect(self._next_page)
+        pager_layout.addWidget(self._btn_next)
+        pager_layout.addStretch()
+        layout.addLayout(pager_layout)
 
         # 底部操作栏
         action_layout = QHBoxLayout()
@@ -70,7 +103,7 @@ class ManualFixPage(QWidget):
 
         # 可选角色提示
         self._info_label = QLabel("")
-        self._info_label.setStyleSheet("color: gray; font-size: 12px;")
+        self._info_label.setStyleSheet("color: #555; font-size: 12px;")
         layout.addWidget(self._info_label)
 
     def refresh(self):
@@ -104,6 +137,7 @@ class ManualFixPage(QWidget):
             if cluster == "过短" or (cluster and not speaker):
                 self._untagged.append(seg)
 
+        self._page = 0
         self._fill_table()
 
         # 加载角色列表
@@ -117,18 +151,23 @@ class ManualFixPage(QWidget):
         self._info_label.setText(f"可选角色（来自 .npy）: {'、'.join(speakers)}" if speakers else "无可用角色声纹")
 
     def _fill_table(self):
-        """填充表格。"""
+        """填充当前页表格。"""
         ns = self._main.current_namespace()
         stem = self._main.current_wav_stem()
         clips_dir = Path("output") / ns / stem / "clips" if ns and stem else Path(".")
 
-        self._table.setRowCount(len(self._untagged))
+        total_pages = max(1, math.ceil(len(self._untagged) / PAGE_SIZE))
+        start = self._page * PAGE_SIZE
+        end = start + PAGE_SIZE
+        page_data = self._untagged[start:end]
+
+        self._table.setRowCount(len(page_data))
         self._checkboxes = []
 
-        for row, seg in enumerate(self._untagged):
+        for row, seg in enumerate(page_data):
             # checkbox
             cb = CheckBox()
-            cb.setChecked(True)
+            cb.setChecked(self._select_all_cb.isChecked())
             self._checkboxes.append(cb)
             self._table.setCellWidget(row, 0, cb)
 
@@ -160,6 +199,28 @@ class ManualFixPage(QWidget):
                 play_btn.setEnabled(False)
             self._table.setCellWidget(row, 5, play_btn)
 
+        # 更新分页
+        self._page_label.setText(f"{self._page + 1} / {total_pages}")
+        self._btn_prev.setEnabled(self._page > 0)
+        self._btn_next.setEnabled(self._page < total_pages - 1)
+
+    def _prev_page(self):
+        if self._page > 0:
+            self._page -= 1
+            self._fill_table()
+
+    def _next_page(self):
+        total_pages = max(1, math.ceil(len(self._untagged) / PAGE_SIZE))
+        if self._page < total_pages - 1:
+            self._page += 1
+            self._fill_table()
+
+    def _toggle_all(self, state):
+        """全选/取消全选当前页。"""
+        checked = state == 2  # Qt.CheckState.Checked
+        for cb in self._checkboxes:
+            cb.setChecked(checked)
+
     def _apply(self):
         """执行手动标注。"""
         speaker = self._speaker_combo.currentText()
@@ -176,11 +237,14 @@ class ManualFixPage(QWidget):
         segments_path = Path("output") / ns / stem / "segments.json"
         clips_dir = Path("output") / ns / stem / "clips"
 
-        # 收集选中的片段
+        # 收集当前页选中的片段
+        start = self._page * PAGE_SIZE
+        page_data = self._untagged[start:start + PAGE_SIZE]
+
         selected_indices = []
         for i, cb in enumerate(self._checkboxes):
             if cb.isChecked():
-                seg = self._untagged[i]
+                seg = page_data[i]
                 selected_indices.append(seg.get("index"))
 
         if not selected_indices:

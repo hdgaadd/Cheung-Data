@@ -4,6 +4,7 @@
 对应命令：python process.py --namespace {ns} --gen-edit {wav_stem}.wav
 """
 
+import os
 from pathlib import Path
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel, QHBoxLayout
 from PySide6.QtCore import Qt
@@ -30,6 +31,11 @@ class PreSplitPage(QWidget):
         self._exec_btn.setFixedWidth(160)
         self._exec_btn.clicked.connect(self._run)
         btn_layout.addWidget(self._exec_btn)
+
+        self._open_btn = PushButton("打开output文件夹")
+        self._open_btn.clicked.connect(self._open_output_dir)
+        btn_layout.addWidget(self._open_btn)
+
         btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
@@ -64,6 +70,16 @@ class PreSplitPage(QWidget):
 
         self._status_label.setText("状态: " + "\n状态: ".join(lines))
 
+    def _open_output_dir(self):
+        """打开当前源文件对应的 output 文件夹。"""
+        ns = self._main.current_namespace()
+        stem = self._main.current_wav_stem()
+        if not ns or not stem:
+            return
+        output_dir = Path("output") / ns / stem
+        output_dir.mkdir(parents=True, exist_ok=True)
+        os.startfile(str(output_dir))
+
     def _run(self):
         """执行预切分。"""
         ns = self._main.current_namespace()
@@ -72,21 +88,40 @@ class PreSplitPage(QWidget):
             return
 
         self._exec_btn.setEnabled(False)
-        self._main.show_progress(10, "音频转换...")
+        self._main.show_progress(5, "准备中...")
 
         from process import gen_edit, load_config
 
         def task():
             config = load_config()
             self._main.progress_signal.emit(10, "音频转换...")
+            # gen_edit 内部会打印各步骤，通过 stdout 重定向到日志
+            # 这里无法插入中间进度，但可以监听日志关键字在外部更新
             gen_edit(ns, f"{stem}.wav", config)
+            self._main.progress_signal.emit(100, "完成")
 
         self._worker = TaskWorker(task)
-        self._worker.log.connect(self._main.log_panel.append)
+        self._worker.log.connect(self._on_log)
         self._worker.progress.connect(self._main.show_progress)
         self._worker.finished_ok.connect(self._on_done)
         self._worker.finished_err.connect(self._on_error)
         self._worker.start()
+
+    def _on_log(self, text):
+        """日志回调，同时根据关键字更新进度。"""
+        self._main.log_panel.append(text)
+        if "转为 16kHz" in text:
+            self._main.show_progress(10, "音频转换...")
+        elif "ASR 模型加载完成" in text:
+            self._main.show_progress(30, "ASR 识别中...")
+        elif "语音识别中" in text:
+            self._main.show_progress(40, "ASR 识别中...")
+        elif "识别完成" in text:
+            self._main.show_progress(70, "生成 edit.txt...")
+        elif "edit.txt 已生成" in text:
+            self._main.show_progress(80, "生成 reference...")
+        elif "reference" in text and "已生成" in text:
+            self._main.show_progress(95, "打开文件...")
 
     def _on_done(self, result):
         self._exec_btn.setEnabled(True)

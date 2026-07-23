@@ -14,14 +14,24 @@ class LogPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 0, 8, 8)
+        layout.setContentsMargins(12, 4, 12, 8)
         layout.setSpacing(4)
 
-        # 日志文本区
+        # 日志文本区（圆角）
         self._text_edit = QTextEdit()
         self._text_edit.setReadOnly(True)
         self._text_edit.setFixedHeight(120)
-        self._text_edit.setStyleSheet("font-family: Consolas, 'Microsoft YaHei'; font-size: 12px;")
+        self._text_edit.setStyleSheet("""
+            QTextEdit {
+                font-family: Consolas, 'Microsoft YaHei';
+                font-size: 12px;
+                color: #111111;
+                background: #ffffff;
+                border: 1px solid #e0e0e0;
+                border-radius: 10px;
+                padding: 8px;
+            }
+        """)
         layout.addWidget(self._text_edit)
 
         # 清空按钮
