@@ -38,7 +38,7 @@ class LabelPage(QWidget):
         btn_layout.addWidget(self._exec_btn)
         btn_layout.addStretch()
 
-        self._open_btn = PushButton("打开clips文件夹")
+        self._open_btn = PushButton("打开文件夹")
         self._open_btn.clicked.connect(self._open_clips_dir)
         btn_layout.addWidget(self._open_btn)
         layout.addLayout(btn_layout)

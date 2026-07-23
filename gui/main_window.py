@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QSettings
 from qfluentwidgets import (
     NavigationInterface, NavigationItemPosition,
-    ComboBox, ProgressRing,
+    ComboBox, ProgressBar,
 )
 from qfluentwidgets import FluentIcon as FIF
 
@@ -108,21 +108,21 @@ class MainWindow(QMainWindow):
 
         root_layout.addWidget(middle, 1)
 
-        # ═══ 进度条（ProgressRing） ═══
+        # ═══ 进度条 ═══
         progress_widget = QWidget()
-        progress_widget.setFixedHeight(40)
+        progress_widget.setFixedHeight(36)
         progress_layout = QHBoxLayout(progress_widget)
         progress_layout.setContentsMargins(16, 4, 16, 4)
 
-        self._progress_ring = ProgressRing()
-        self._progress_ring.setFixedSize(28, 28)
-        self._progress_ring.setTextVisible(False)
-        progress_layout.addWidget(self._progress_ring)
+        self._progress_bar = ProgressBar()
+        self._progress_bar.setFixedHeight(8)
+        self._progress_bar.setCustomBarColor("#4a9eff", "#4a9eff")
+        progress_layout.addWidget(self._progress_bar, 1)
 
         self._progress_label = QLabel("")
-        self._progress_label.setStyleSheet("font-size: 12px; color: #333; padding-left: 8px;")
+        self._progress_label.setStyleSheet("font-size: 12px; color: #333; padding-left: 12px;")
+        self._progress_label.setFixedWidth(200)
         progress_layout.addWidget(self._progress_label)
-        progress_layout.addStretch()
 
         self._progress_widget = progress_widget
         self._progress_widget.setVisible(False)
@@ -212,13 +212,13 @@ class MainWindow(QMainWindow):
     def show_progress(self, percent: int, text: str = ""):
         """显示进度。"""
         self._progress_widget.setVisible(True)
-        self._progress_ring.setValue(percent)
+        self._progress_bar.setValue(percent)
         self._progress_label.setText(text)
 
     def hide_progress(self):
         """隐藏进度。"""
         self._progress_widget.setVisible(False)
-        self._progress_ring.setValue(0)
+        self._progress_bar.setValue(0)
         self._progress_label.setText("")
 
     # ═══ 窗口大小记忆 ═══

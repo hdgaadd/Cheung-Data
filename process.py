@@ -26,6 +26,11 @@ from pathlib import Path
 
 import numpy as np
 
+# Windows: 防止 subprocess 弹出 CMD 窗口
+_SUBPROCESS_KWARGS = {}
+if sys.platform == "win32":
+    _SUBPROCESS_KWARGS["creationflags"] = subprocess.CREATE_NO_WINDOW
+
 
 # ============================================================
 # 修复 Windows 控制台编码
@@ -137,7 +142,7 @@ def convert_to_16k_mono(input_path, output_path):
         "-acodec", "pcm_s16le",
         str(output_path),
     ]
-    result = subprocess.run(cmd, capture_output=True)
+    result = subprocess.run(cmd, capture_output=True, **_SUBPROCESS_KWARGS)
     return result.returncode == 0
 
 
@@ -399,7 +404,7 @@ def generate_reference_mp4(source_mp4, phrases, output_path, silence_duration=2.
             "-c:a", "aac",
             str(black_path),
         ]
-        subprocess.run(cmd, capture_output=True)
+        subprocess.run(cmd, capture_output=True, **_SUBPROCESS_KWARGS)
 
         # 切出每个片段
         for i, phrase in enumerate(phrases):
@@ -418,7 +423,7 @@ def generate_reference_mp4(source_mp4, phrases, output_path, silence_duration=2.
                 "-avoid_negative_ts", "make_zero",
                 str(segment_path),
             ]
-            result = subprocess.run(cmd, capture_output=True)
+            result = subprocess.run(cmd, capture_output=True, **_SUBPROCESS_KWARGS)
             if result.returncode == 0 and segment_path.exists() and segment_path.stat().st_size > 0:
                 segment_files.append(segment_path)
 
@@ -444,7 +449,7 @@ def generate_reference_mp4(source_mp4, phrases, output_path, silence_duration=2.
             "-c", "copy",
             str(output_path),
         ]
-        subprocess.run(cmd, capture_output=True)
+        subprocess.run(cmd, capture_output=True, **_SUBPROCESS_KWARGS)
 
     finally:
         # 清理临时文件
@@ -661,7 +666,7 @@ def apply_edit(namespace, episode_name, config, no_label=False):
             "-ar", "16000", "-ac", "1",
             str(output_path),
         ]
-        result = subprocess.run(cmd, capture_output=True)
+        result = subprocess.run(cmd, capture_output=True, **_SUBPROCESS_KWARGS)
         if result.returncode == 0:
             seg["file"] = filename
         else:

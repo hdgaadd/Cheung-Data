@@ -32,7 +32,7 @@ class ManualFixPage(QWidget):
         self._main = main_window
         self._player = AudioPlayer()
         self._segments = []
-        self._untagged = []  # 筛选后的待标注片段
+        self._untagged = []
         self._checkboxes = []
         self._page = 0
 
@@ -40,16 +40,35 @@ class ManualFixPage(QWidget):
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(12)
 
-        # 标题 + 全选
-        header_layout = QHBoxLayout()
-        header_layout.addWidget(QLabel("未标注/过短的片段:"))
-        header_layout.addSpacing(16)
+        # 顶部操作栏：全选 + 角色选择 + 执行
+        action_layout = QHBoxLayout()
+
         self._select_all_cb = CheckBox("全选")
         self._select_all_cb.setChecked(True)
         self._select_all_cb.stateChanged.connect(self._toggle_all)
-        header_layout.addWidget(self._select_all_cb)
-        header_layout.addStretch()
-        layout.addLayout(header_layout)
+        action_layout.addWidget(self._select_all_cb)
+
+        action_layout.addSpacing(24)
+        action_layout.addWidget(QLabel("指定角色:"))
+        self._speaker_combo = ComboBox()
+        self._speaker_combo.setFixedWidth(160)
+        action_layout.addWidget(self._speaker_combo)
+        action_layout.addSpacing(16)
+
+        self._exec_btn = PrimaryPushButton("▶ 执行标注")
+        self._exec_btn.setFixedWidth(120)
+        self._exec_btn.clicked.connect(self._apply)
+        action_layout.addWidget(self._exec_btn)
+        action_layout.addStretch()
+        layout.addLayout(action_layout)
+
+        # 可选角色提示
+        self._info_label = QLabel("")
+        self._info_label.setStyleSheet("color: #555; font-size: 12px;")
+        layout.addWidget(self._info_label)
+
+        # 标题
+        layout.addWidget(QLabel("未标注/过短的片段:"))
 
         # 表格
         self._table = TableWidget(self)
@@ -86,26 +105,6 @@ class ManualFixPage(QWidget):
         pager_layout.addStretch()
         layout.addLayout(pager_layout)
 
-        # 底部操作栏
-        action_layout = QHBoxLayout()
-        action_layout.addWidget(QLabel("指定角色:"))
-        self._speaker_combo = ComboBox()
-        self._speaker_combo.setFixedWidth(160)
-        action_layout.addWidget(self._speaker_combo)
-        action_layout.addSpacing(16)
-
-        self._exec_btn = PrimaryPushButton("▶ 执行标注")
-        self._exec_btn.setFixedWidth(120)
-        self._exec_btn.clicked.connect(self._apply)
-        action_layout.addWidget(self._exec_btn)
-        action_layout.addStretch()
-        layout.addLayout(action_layout)
-
-        # 可选角色提示
-        self._info_label = QLabel("")
-        self._info_label.setStyleSheet("color: #555; font-size: 12px;")
-        layout.addWidget(self._info_label)
-
     def refresh(self):
         """刷新页面。"""
         ns = self._main.current_namespace()
@@ -116,7 +115,6 @@ class ManualFixPage(QWidget):
             self._table.setRowCount(0)
             return
 
-        # 加载 segments
         segments_path = Path("output") / ns / stem / "segments.json"
         if not segments_path.exists():
             self._segments = []
@@ -127,7 +125,6 @@ class ManualFixPage(QWidget):
         with open(segments_path, "r", encoding="utf-8") as f:
             self._segments = json.load(f)
 
-        # 筛选: speaker 为 null 且 cluster 不为 null，或 cluster 为"过短"
         self._untagged = []
         for seg in self._segments:
             cluster = seg.get("cluster")
@@ -165,30 +162,23 @@ class ManualFixPage(QWidget):
         self._checkboxes = []
 
         for row, seg in enumerate(page_data):
-            # checkbox
             cb = CheckBox()
             cb.setChecked(self._select_all_cb.isChecked())
             self._checkboxes.append(cb)
             self._table.setCellWidget(row, 0, cb)
 
-            # #
             self._table.setItem(row, 1, QTableWidgetItem(f"{seg.get('index', 0):03d}"))
-
-            # 文件名
             self._table.setItem(row, 2, QTableWidgetItem(seg.get("file", "")))
 
-            # 状态
             cluster = seg.get("cluster", "")
             status = "过短" if cluster == "过短" else "未标注"
             self._table.setItem(row, 3, QTableWidgetItem(status))
 
-            # 文本
             text = seg.get("text", "")
             item = QTableWidgetItem(text[:20] + "..." if len(text) > 20 else text)
             item.setToolTip(text)
             self._table.setItem(row, 4, item)
 
-            # 播放按钮
             play_btn = ToolButton(FIF.PLAY)
             play_btn.setFixedSize(30, 30)
             file_path = seg.get("file", "")
@@ -199,7 +189,6 @@ class ManualFixPage(QWidget):
                 play_btn.setEnabled(False)
             self._table.setCellWidget(row, 5, play_btn)
 
-        # 更新分页
         self._page_label.setText(f"{self._page + 1} / {total_pages}")
         self._btn_prev.setEnabled(self._page > 0)
         self._btn_next.setEnabled(self._page < total_pages - 1)
@@ -217,7 +206,7 @@ class ManualFixPage(QWidget):
 
     def _toggle_all(self, state):
         """全选/取消全选当前页。"""
-        checked = state == 2  # Qt.CheckState.Checked
+        checked = state == 2
         for cb in self._checkboxes:
             cb.setChecked(checked)
 
@@ -237,7 +226,6 @@ class ManualFixPage(QWidget):
         segments_path = Path("output") / ns / stem / "segments.json"
         clips_dir = Path("output") / ns / stem / "clips"
 
-        # 收集当前页选中的片段
         start = self._page * PAGE_SIZE
         page_data = self._untagged[start:start + PAGE_SIZE]
 
@@ -250,20 +238,15 @@ class ManualFixPage(QWidget):
         if not selected_indices:
             return
 
-        # 更新 segments.json
         for seg in self._segments:
             if seg.get("index") in selected_indices:
                 seg["speaker"] = speaker
                 seg["score"] = None
 
-        # 重命名文件
         rename_clips(self._segments, clips_dir)
 
-        # 保存
         with open(segments_path, "w", encoding="utf-8") as f:
             json.dump(self._segments, f, ensure_ascii=False, indent=2)
 
         self._main.log_panel.append(f"✓ 已标注 {len(selected_indices)} 个片段为「{speaker}」")
-
-        # 刷新
         self.refresh()

@@ -1,3 +1,4 @@
 @echo off
 cd /d "%~dp0"
-start "" pythonw gui.py
+start "Cheung-Data" /b python gui.py
+exit

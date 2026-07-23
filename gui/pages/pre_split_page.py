@@ -31,12 +31,12 @@ class PreSplitPage(QWidget):
         self._exec_btn.setFixedWidth(160)
         self._exec_btn.clicked.connect(self._run)
         btn_layout.addWidget(self._exec_btn)
+        btn_layout.addStretch()
 
-        self._open_btn = PushButton("打开output文件夹")
+        self._open_btn = PushButton("打开文件夹")
         self._open_btn.clicked.connect(self._open_output_dir)
         btn_layout.addWidget(self._open_btn)
 
-        btn_layout.addStretch()
         layout.addLayout(btn_layout)
 
         # 状态标签
