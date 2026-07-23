@@ -32,8 +32,8 @@ class LabelPage(QWidget):
 
         # 按钮栏
         btn_layout = QHBoxLayout()
-        self._exec_btn = PrimaryPushButton("▶ 执行标注")
-        self._exec_btn.setFixedWidth(140)
+        self._exec_btn = PrimaryPushButton("▶ 执行")
+        self._exec_btn.setFixedWidth(100)
         self._exec_btn.clicked.connect(self._run)
         btn_layout.addWidget(self._exec_btn)
         btn_layout.addStretch()
@@ -57,7 +57,7 @@ class LabelPage(QWidget):
         layout.addLayout(self._toggle_layout)
 
         # 表格
-        self._table = ClipTable(self)
+        self._table = ClipTable(self, settings_key="label_table")
         layout.addWidget(self._table)
 
     def refresh(self):

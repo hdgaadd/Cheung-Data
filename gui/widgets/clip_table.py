@@ -1,11 +1,11 @@
 """
-切片列表表格 - 支持分页、播放按钮、tooltip。
+切片列表表格 - 支持分页、播放按钮、tooltip、列宽记忆。
 """
 
 import math
 from pathlib import Path
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QHeaderView, QAbstractItemView
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QSettings
 from qfluentwidgets import TableWidget, PushButton, ToolButton
 from qfluentwidgets import FluentIcon as FIF
 
@@ -17,12 +17,14 @@ class ClipTable(QWidget):
 
     PAGE_SIZE = 10
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, settings_key: str = "clip_table"):
         super().__init__(parent)
-        self._data = []       # 完整数据列表
-        self._columns = []    # 列配置: [(header, key, width), ...]
+        self._data = []
+        self._columns = []
         self._page = 0
         self._player = AudioPlayer()
+        self._settings = QSettings("CheungData", "GUI")
+        self._settings_key = settings_key
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -32,6 +34,7 @@ class ClipTable(QWidget):
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._table.verticalHeader().setVisible(False)
+        self._table.horizontalHeader().sectionResized.connect(self._save_column_widths)
         layout.addWidget(self._table)
 
         # 分页栏
@@ -58,21 +61,37 @@ class ClipTable(QWidget):
     def setup_columns(self, columns: list):
         """设置列配置: [(header, key, width), ...]"""
         self._columns = columns
-        # +1 for play button column
         self._table.setColumnCount(len(columns) + 1)
         headers = [c[0] for c in columns] + ["▶"]
         self._table.setHorizontalHeaderLabels(headers)
         header = self._table.horizontalHeader()
+
+        # 恢复保存的列宽
+        saved = self._settings.value(f"{self._settings_key}/col_widths")
+
         for i, (_, _, width) in enumerate(columns):
+            if saved and i < len(saved):
+                try:
+                    self._table.setColumnWidth(i, int(saved[i]))
+                    continue
+                except (ValueError, TypeError):
+                    pass
             if width > 0:
                 self._table.setColumnWidth(i, width)
             else:
                 header.setSectionResizeMode(i, QHeaderView.Stretch)
-        # 播放按钮列
+
         self._table.setColumnWidth(len(columns), 40)
 
+    def _save_column_widths(self):
+        """保存列宽到 QSettings。"""
+        if not self._columns:
+            return
+        widths = [self._table.columnWidth(i) for i in range(len(self._columns))]
+        self._settings.setValue(f"{self._settings_key}/col_widths", widths)
+
     def set_data(self, data: list, clips_dir: str = ""):
-        """设置数据并显示第一页。data 为 dict 列表。"""
+        """设置数据并显示第一页。"""
         self._data = data
         self._clips_dir = clips_dir
         self._page = 0
@@ -92,15 +111,12 @@ class ClipTable(QWidget):
             for col, (_, key, _) in enumerate(self._columns):
                 val = str(item.get(key, ""))
                 cell = QTableWidgetItem(val)
-                # tooltip for text column
                 if key == "text":
                     cell.setToolTip(val)
-                    # 截断显示
                     if len(val) > 20:
                         cell.setText(val[:20] + "...")
                 self._table.setItem(row, col, cell)
 
-            # 播放按钮
             play_btn = ToolButton(FIF.PLAY)
             play_btn.setFixedSize(30, 30)
             file_path = item.get("file", "")
@@ -111,7 +127,6 @@ class ClipTable(QWidget):
                 play_btn.setEnabled(False)
             self._table.setCellWidget(row, len(self._columns), play_btn)
 
-        # 更新分页
         self._page_label.setText(f"{self._page + 1} / {total_pages}")
         self._btn_prev.setEnabled(self._page > 0)
         self._btn_next.setEnabled(self._page < total_pages - 1)

@@ -162,8 +162,13 @@ class MainWindow(QMainWindow):
             routeKey=text,
             icon=icon,
             text=text,
-            onClick=lambda checked=None, p=page: self._stack.setCurrentWidget(p),
+            onClick=lambda checked=None, p=page: self._switch_page(p),
         )
+
+    def _switch_page(self, page):
+        """切换页面并刷新。"""
+        self._stack.setCurrentWidget(page)
+        page.refresh()
 
     # ═══ 顶部选择器逻辑 ═══
 

@@ -27,8 +27,8 @@ class PreSplitPage(QWidget):
 
         # 执行按钮
         btn_layout = QHBoxLayout()
-        self._exec_btn = PrimaryPushButton("▶ 执行预切分")
-        self._exec_btn.setFixedWidth(160)
+        self._exec_btn = PrimaryPushButton("▶ 执行")
+        self._exec_btn.setFixedWidth(100)
         self._exec_btn.clicked.connect(self._run)
         btn_layout.addWidget(self._exec_btn)
         btn_layout.addStretch()

@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QHeaderView, QAbstractItemView, QTableWidgetItem,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QSettings
 from qfluentwidgets import (
     PrimaryPushButton, PushButton, ComboBox, TableWidget, CheckBox, ToolButton,
 )
@@ -35,6 +35,7 @@ class ManualFixPage(QWidget):
         self._untagged = []
         self._checkboxes = []
         self._page = 0
+        self._settings = QSettings("CheungData", "GUI")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
@@ -83,6 +84,8 @@ class ManualFixPage(QWidget):
         self._table.setColumnWidth(3, 70)
         self._table.setColumnWidth(5, 40)
         self._table.horizontalHeader().setSectionResizeMode(4, QHeaderView.Stretch)
+        self._table.horizontalHeader().sectionResized.connect(self._save_column_widths)
+        self._restore_column_widths()
         layout.addWidget(self._table)
 
         # 分页栏
@@ -104,6 +107,22 @@ class ManualFixPage(QWidget):
         pager_layout.addWidget(self._btn_next)
         pager_layout.addStretch()
         layout.addLayout(pager_layout)
+
+    def _save_column_widths(self):
+        """保存列宽。"""
+        widths = [self._table.columnWidth(i) for i in range(6)]
+        self._settings.setValue("manual_fix_table/col_widths", widths)
+
+    def _restore_column_widths(self):
+        """恢复列宽。"""
+        saved = self._settings.value("manual_fix_table/col_widths")
+        if saved:
+            for i, w in enumerate(saved):
+                try:
+                    if i < 6:
+                        self._table.setColumnWidth(i, int(w))
+                except (ValueError, TypeError):
+                    pass
 
     def refresh(self):
         """刷新页面。"""
@@ -164,6 +183,7 @@ class ManualFixPage(QWidget):
         for row, seg in enumerate(page_data):
             cb = CheckBox()
             cb.setChecked(self._select_all_cb.isChecked())
+            cb.stateChanged.connect(self._on_item_check_changed)
             self._checkboxes.append(cb)
             self._table.setCellWidget(row, 0, cb)
 
@@ -208,7 +228,22 @@ class ManualFixPage(QWidget):
         """全选/取消全选当前页。"""
         checked = state == 2
         for cb in self._checkboxes:
+            cb.blockSignals(True)
             cb.setChecked(checked)
+            cb.blockSignals(False)
+
+    def _on_item_check_changed(self):
+        """单个 checkbox 变化时，同步全选状态。"""
+        self._select_all_cb.blockSignals(True)
+        all_checked = all(cb.isChecked() for cb in self._checkboxes)
+        none_checked = not any(cb.isChecked() for cb in self._checkboxes)
+        if all_checked:
+            self._select_all_cb.setChecked(True)
+        elif none_checked:
+            self._select_all_cb.setChecked(False)
+        else:
+            self._select_all_cb.setChecked(False)
+        self._select_all_cb.blockSignals(False)
 
     def _apply(self):
         """执行手动标注。"""
