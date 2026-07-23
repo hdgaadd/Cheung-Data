@@ -553,31 +553,28 @@ def compare_with_previous_data(old_segments, new_segments):
     if not old_segments:
         return []
 
-    # 建立旧切片的时间范围索引（用 start 做粗匹配）
-    old_by_start = {}
+    # 用文本做匹配（文本是最稳定的标识）
+    old_by_text = {}
     for seg in old_segments:
-        key = round(seg["start"], 2)
-        old_by_start[key] = seg
+        text = seg.get("text", "")
+        if text:
+            old_by_text[text] = seg
 
     changes = []  # [(type, index, text, old_range, new_range)]
 
     for i, seg in enumerate(new_segments, 1):
         new_start = round(seg["start"], 2)
         new_end = round(seg["end"], 2)
-        text = seg["text"]
+        text = seg.get("text", "")
 
-        # 尝试匹配旧切片（start 相同或非常接近）
-        matched_old = None
-        for old_start, old_seg in old_by_start.items():
-            if abs(old_start - new_start) < 0.5:
-                matched_old = old_seg
-                break
+        # 按文本匹配旧切片
+        matched_old = old_by_text.get(text)
 
         if matched_old:
             old_start_r = round(matched_old["start"], 2)
             old_end_r = round(matched_old["end"], 2)
-            # 时间有变化
-            if abs(old_end_r - new_end) >= 0.05 or abs(old_start_r - new_start) >= 0.05:
+            # 时间有变化（阈值 0.005s，能检测到 0.01s 的修改）
+            if abs(old_end_r - new_end) >= 0.005 or abs(old_start_r - new_start) >= 0.005:
                 old_range = f"{format_time(matched_old['start'])}-{format_time(matched_old['end'])}"
                 new_range = f"{format_time(seg['start'])}-{format_time(seg['end'])}"
                 changes.append(("时间调整", i, text, old_range, new_range))

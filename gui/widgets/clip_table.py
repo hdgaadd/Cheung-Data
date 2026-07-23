@@ -31,7 +31,7 @@ class ClipTable(QWidget):
 
         # 表格
         self._table = TableWidget(self)
-        self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._table.setSelectionMode(QAbstractItemView.NoSelection)
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._table.verticalHeader().setVisible(False)
         self._table.horizontalHeader().sectionResized.connect(self._save_column_widths)

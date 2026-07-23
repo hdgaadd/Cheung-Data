@@ -73,7 +73,7 @@ class ManualFixPage(QWidget):
 
         # 表格
         self._table = TableWidget(self)
-        self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self._table.setSelectionMode(QAbstractItemView.NoSelection)
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self._table.verticalHeader().setVisible(False)
         self._table.setColumnCount(6)
@@ -164,6 +164,8 @@ class ManualFixPage(QWidget):
 
         self._speaker_combo.clear()
         self._speaker_combo.addItems(speakers)
+        if speakers:
+            self._speaker_combo.setCurrentIndex(0)
         self._info_label.setText(f"可选角色（来自 .npy）: {'、'.join(speakers)}" if speakers else "无可用角色声纹")
 
     def _fill_table(self):
@@ -171,6 +173,7 @@ class ManualFixPage(QWidget):
         ns = self._main.current_namespace()
         stem = self._main.current_wav_stem()
         clips_dir = Path("output") / ns / stem / "clips" if ns and stem else Path(".")
+        clips_dir = clips_dir.resolve()
 
         total_pages = max(1, math.ceil(len(self._untagged) / PAGE_SIZE))
         start = self._page * PAGE_SIZE

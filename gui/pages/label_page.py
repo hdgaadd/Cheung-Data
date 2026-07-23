@@ -190,7 +190,7 @@ class LabelPage(QWidget):
 
         ns = self._main.current_namespace()
         stem = self._main.current_wav_stem()
-        clips_dir = str(Path("output") / ns / stem / "clips") if ns and stem else ""
+        clips_dir = str((Path("output") / ns / stem / "clips").resolve()) if ns and stem else ""
         self._table.set_data(data, clips_dir)
 
     def _show_all_view(self):
@@ -214,7 +214,7 @@ class LabelPage(QWidget):
 
         ns = self._main.current_namespace()
         stem = self._main.current_wav_stem()
-        clips_dir = str(Path("output") / ns / stem / "clips") if ns and stem else ""
+        clips_dir = str((Path("output") / ns / stem / "clips").resolve()) if ns and stem else ""
         self._table.set_data(data, clips_dir)
 
     def _open_clips_dir(self):
