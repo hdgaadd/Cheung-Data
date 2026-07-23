@@ -5,3 +5,5 @@ torchaudio
 numpy
 soundfile
 scikit-learn
+PySide6
+PySide6-Fluent-Widgets

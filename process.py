@@ -267,8 +267,7 @@ def gen_edit(namespace, wav_filename, config):
     wav_path = wavs_dir / wav_filename
 
     if not wav_path.exists():
-        print(f"❌ WAV 文件不存在: {wav_path}")
-        sys.exit(1)
+        raise RuntimeError(f"WAV 文件不存在: {wav_path}")
 
     wav_stem = wav_path.stem
     episode_dir = Path("output") / namespace / wav_stem
@@ -276,9 +275,7 @@ def gen_edit(namespace, wav_filename, config):
     # 检查 edit.txt 是否已存在
     edit_path = episode_dir / "edit.txt"
     if edit_path.exists():
-        print(f"❌ edit.txt 已存在: {edit_path}")
-        print(f"   请删除后重新执行: del \"{edit_path}\"")
-        sys.exit(1)
+        raise RuntimeError(f"edit.txt 已存在: {edit_path}\n请删除后重新执行: del \"{edit_path}\"")
 
     print(f"\n{'='*60}")
     print(f"生成编辑文件: {namespace}/{wav_filename}")
@@ -291,8 +288,7 @@ def gen_edit(namespace, wav_filename, config):
     temp_16k = episode_dir / "_temp_16k.wav"
     print(f"  [转换] 转为 16kHz mono...")
     if not convert_to_16k_mono(wav_path, temp_16k):
-        print(f"  ❌ 音频转换失败")
-        sys.exit(1)
+        raise RuntimeError("音频转换失败")
 
     try:
         # 步骤 2：ASR 识别（逗号级粒度）
@@ -316,8 +312,7 @@ def gen_edit(namespace, wav_filename, config):
         phrases = transcribe_to_phrases(temp_16k, asr_model, hotwords)
 
         if not phrases:
-            print("  ⚠ 未识别到任何对话")
-            sys.exit(1)
+            raise RuntimeError("未识别到任何对话")
 
         # 后处理纠错
         for phrase in phrases:
@@ -549,9 +544,9 @@ def parse_edit_txt(edit_path):
 
 
 def compare_with_previous_data(old_segments, new_segments):
-    """对比新旧 segments，打印变化（时间调整 + 新切片）"""
+    """对比新旧 segments，打印变化（时间调整 + 新切片）。返回变化列表。"""
     if not old_segments:
-        return
+        return []
 
     # 建立旧切片的时间范围索引（用 start 做粗匹配）
     old_by_start = {}
@@ -588,7 +583,7 @@ def compare_with_previous_data(old_segments, new_segments):
 
     if not changes:
         print(f"\n  [对比上次] edit.txt 无变化")
-        return
+        return []
 
     # 按序号排序
     changes.sort(key=lambda x: x[1])
@@ -602,6 +597,8 @@ def compare_with_previous_data(old_segments, new_segments):
             print(f"             {new_range}")
         print()
 
+    return changes
+
 
 def apply_edit(namespace, episode_name, config, no_label=False):
     """按 edit.txt 切分音频 + 聚类 + 标注"""
@@ -611,15 +608,12 @@ def apply_edit(namespace, episode_name, config, no_label=False):
 
     # 检查 edit.txt 存在
     if not edit_path.exists():
-        print(f"❌ edit.txt 不存在: {edit_path}")
-        print(f"   请先运行: python process.py --namespace {namespace} --gen-edit {episode_name}.wav")
-        sys.exit(1)
+        raise RuntimeError(f"edit.txt 不存在: {edit_path}\n请先运行: python process.py --namespace {namespace} --gen-edit {episode_name}.wav")
 
     # 找到源 WAV
     wav_path = Path("wavs") / namespace / f"{episode_name}.wav"
     if not wav_path.exists():
-        print(f"❌ 源 WAV 不存在: {wav_path}")
-        sys.exit(1)
+        raise RuntimeError(f"源 WAV 不存在: {wav_path}")
 
     print(f"\n{'='*60}")
     print(f"应用编辑: {namespace}/{episode_name}")
@@ -629,8 +623,7 @@ def apply_edit(namespace, episode_name, config, no_label=False):
     print(f"  [解析] 读取 edit.txt...")
     segments = parse_edit_txt(edit_path)
     if not segments:
-        print(f"  ❌ edit.txt 中无有效内容")
-        sys.exit(1)
+        raise RuntimeError("edit.txt 中无有效内容")
     print(f"  ✓ 解析完成: {len(segments)} 个切片")
 
     # 记住旧 segments.json 路径，最后对比用
@@ -949,13 +942,11 @@ def label_only(target, config):
         namespace = parts[0]
         episodes = None
     else:
-        print(f"❌ 格式错误，应为: namespace/episode 或 namespace")
-        sys.exit(1)
+        raise RuntimeError("格式错误，应为: namespace/episode 或 namespace")
 
     output_dir = Path("output") / namespace
     if not output_dir.exists():
-        print(f"❌ 目录不存在: {output_dir}")
-        sys.exit(1)
+        raise RuntimeError(f"目录不存在: {output_dir}")
 
     if episodes:
         dirs_to_process = [output_dir / ep for ep in episodes]
@@ -963,8 +954,7 @@ def label_only(target, config):
         dirs_to_process = sorted([d for d in output_dir.iterdir() if d.is_dir()])
 
     if not dirs_to_process:
-        print(f"❌ 未找到任何已处理的目录")
-        sys.exit(1)
+        raise RuntimeError("未找到任何已处理的目录")
 
     embedding_model = load_embedding_model()
 

@@ -40,15 +40,12 @@ def export_namespace(namespace, config):
     export_base = Path(config.get("export_path", "export")) / namespace
 
     if not output_dir.exists():
-        print(f"❌ 输出目录不存在: {output_dir}")
-        print(f"   请先运行: python process.py --namespace {namespace}")
-        sys.exit(1)
+        raise RuntimeError(f"输出目录不存在: {output_dir}\n请先运行: python process.py --namespace {namespace}")
 
     # 扫描所有 episode 目录
     episode_dirs = sorted([d for d in output_dir.iterdir() if d.is_dir()])
     if not episode_dirs:
-        print(f"❌ 未找到任何已处理的目录: {output_dir}")
-        sys.exit(1)
+        raise RuntimeError(f"未找到任何已处理的目录: {output_dir}")
 
     # 收集所有有效标注的片段，按 speaker 分组
     speaker_items = defaultdict(list)  # speaker -> [(text, source, clip_path)]
@@ -88,10 +85,7 @@ def export_namespace(namespace, config):
             })
 
     if not speaker_items:
-        print(f"❌ 未找到有效标注数据。请确认已完成角色标注:")
-        print(f"   python process.py --namespace {namespace}")
-        print(f"   或: python process.py --label {namespace}")
-        sys.exit(1)
+        raise RuntimeError(f"未找到有效标注数据。请确认已完成角色标注。")
 
     # 统计
     total_items = sum(len(items) for items in speaker_items.values())

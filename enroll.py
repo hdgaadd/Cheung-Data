@@ -172,10 +172,7 @@ def enroll_namespace(model, namespace, speaker=None):
     sources_dir = Path("speaker_sources") / namespace
 
     if not sources_dir.exists():
-        print(f"❌ 素材目录不存在: {sources_dir}")
-        print(f"   请创建目录并放入角色 WAV 片段:")
-        print(f"   speaker_sources/{namespace}/{{角色名}}/*.wav")
-        sys.exit(1)
+        raise RuntimeError(f"素材目录不存在: {sources_dir}\n请创建目录并放入角色 WAV 片段:\nspeaker_sources/{namespace}/{{角色名}}/*.wav")
 
     if speaker:
         # 单个角色
@@ -185,8 +182,7 @@ def enroll_namespace(model, namespace, speaker=None):
         speakers = sorted([d.name for d in sources_dir.iterdir() if d.is_dir()])
 
     if not speakers:
-        print(f"❌ 未找到任何角色目录: {sources_dir}")
-        sys.exit(1)
+        raise RuntimeError(f"未找到任何角色目录: {sources_dir}")
 
     print(f"命名空间: {namespace}")
     print(f"待注册角色: {', '.join(speakers)}")
