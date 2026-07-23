@@ -1,0 +1,42 @@
+{
+  "哆啦A梦": {
+    "sample_count": 6,
+    "total_files": 6,
+    "skipped_files": 0,
+    "sources_dir": "speaker_sources\\哆啦A梦\\哆啦A梦",
+    "created_at": "2026-07-24",
+    "last_updated": "2026-07-24"
+  },
+  "大雄": {
+    "sample_count": 6,
+    "total_files": 6,
+    "skipped_files": 0,
+    "sources_dir": "speaker_sources\\哆啦A梦\\大雄",
+    "created_at": "2026-07-24",
+    "last_updated": "2026-07-24"
+  },
+  "小夫": {
+    "sample_count": 5,
+    "total_files": 6,
+    "skipped_files": 1,
+    "sources_dir": "speaker_sources\\哆啦A梦\\小夫",
+    "created_at": "2026-07-24",
+    "last_updated": "2026-07-24"
+  },
+  "胖虎": {
+    "sample_count": 3,
+    "total_files": 6,
+    "skipped_files": 3,
+    "sources_dir": "speaker_sources\\哆啦A梦\\胖虎",
+    "created_at": "2026-07-24",
+    "last_updated": "2026-07-24"
+  },
+  "静香": {
+    "sample_count": 1,
+    "total_files": 2,
+    "skipped_files": 1,
+    "sources_dir": "speaker_sources\\哆啦A梦\\静香",
+    "created_at": "2026-07-24",
+    "last_updated": "2026-07-24"
+  }
+}
